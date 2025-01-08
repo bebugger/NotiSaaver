@@ -10,120 +10,97 @@ import com.dropbox.core.DbxSessionStore
 import com.dropbox.core.DbxWebAuth
 import com.dropbox.core.v2.DbxClientV2
 import com.dropbox.core.v2.users.FullAccount
+import com.example.notisaaver.util.BuildConfig
 import com.example.notisaaver.util.SharedPreferencesSessionStore
 import okhttp3.*
 import org.json.JSONObject
 import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlin.concurrent.thread
 
 object DropboxHelper {
 
-    private const val APP_KEY = "mrqqi4cirp533s8"
-    private const val APP_SECRET = "jkm74jzpmsn3j39"
-    private const val REDIRECT_URI = "https://sites.google.com/view/notisaaver"
-    private const val TOKEN_URL = "https://api.dropboxapi.com/oauth2/token"
-    private const val SESSION_STORE_KEY = "dbx_auth_session"
+    private const val ACCESS_TOKEN_PREF_KEY = "DROPBOX_ACCESS_TOKEN"
+    private const val DROPBOX_OAUTH_URL = "https://www.dropbox.com/oauth2/authorize"
 
-    private fun getDbxAppInfo(): DbxAppInfo {
-        return DbxAppInfo(APP_KEY, APP_SECRET)
-    }
-
-    private fun getDbxSessionStore(context: Context): DbxSessionStore {
-        val sharedPreferences = context.getSharedPreferences("DropboxPrefs", Context.MODE_PRIVATE)
-        return SharedPreferencesSessionStore(sharedPreferences, SESSION_STORE_KEY)
-    }
-
+    /**
+     * Starts the Dropbox OAuth flow by opening the authorization URL in a browser.
+     * The user will copy the authorization code from Dropbox and paste it into the app.
+     */
     fun startOAuthFlow(context: Context) {
-        val config = DbxRequestConfig.newBuilder("NotiSaaver").build()
-        val appInfo = getDbxAppInfo()
-        val sessionStore = getDbxSessionStore(context)
-
-        val webAuth = DbxWebAuth(config, appInfo)
-        val request = DbxWebAuth.Request.newBuilder()
-//            .withRedirectUri(REDIRECT_URI, sessionStore)
-            .build()
-
-        val authorizeUrl = webAuth.authorize(request)
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(authorizeUrl))
+        val authUrl = "$DROPBOX_OAUTH_URL?client_id=${BuildConfig.DROPBOX_APP_KEY}&response_type=code"
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
         context.startActivity(intent)
     }
 
-    fun handleOAuthRedirect(context: Context, uri: Uri) {
-        val code = uri.getQueryParameter("code")
-        if (code != null) {
-            exchangeCodeForAccessToken(code, context)
-        } else {
-            Toast.makeText(context, "Error: No authorization code found", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun exchangeCodeForAccessToken(code: String, context: Context) {
-        val client = OkHttpClient()
-
-        val formBody = FormBody.Builder()
-            .add("code", code)
-            .add("grant_type", "authorization_code")
-            .add("client_id", APP_KEY)
-            .add("client_secret", APP_SECRET)
-//            .add("redirect_uri", REDIRECT_URI)
-            .build()
-
-        val request = Request.Builder()
-            .url(TOKEN_URL)
-            .post(formBody)
-            .build()
-
-        client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                Toast.makeText(context, "Error exchanging code for token: ${e.message}", Toast.LENGTH_SHORT).show()
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                if (response.isSuccessful) {
-                    val responseData = response.body?.string()
-                    val accessToken = parseAccessToken(responseData)
-                    if (accessToken != null) {
-                        saveAccessToken(context, accessToken)
-                        Toast.makeText(context, "Access token saved", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, "Error: Access token not found in response", Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    Toast.makeText(context, "Error: ${response.message}", Toast.LENGTH_SHORT).show()
-                }
-            }
-        })
-    }
-
-    private fun parseAccessToken(responseData: String?): String? {
-        responseData?.let {
-            return try {
-                val json = JSONObject(it)
-                json.getString("access_token")
-            } catch (e: Exception) {
-                null
-            }
-        }
-        return null
-    }
-
-    private fun saveAccessToken(context: Context, accessToken: String) {
-        val sharedPreferences = context.getSharedPreferences("DropboxPrefs", Context.MODE_PRIVATE)
-        sharedPreferences.edit().putString("access_token", accessToken).apply()
-    }
-
-    fun getAccessToken(context: Context): String? {
-        val sharedPreferences = context.getSharedPreferences("DropboxPrefs", Context.MODE_PRIVATE)
-        return sharedPreferences.getString("access_token", null)
-    }
-
-    fun getAccountInfo(client: DbxClientV2?) {
-        if (client != null) {
+    /**
+     * Exchanges the authorization code for an access token using the Dropbox API.
+     * On success, the access token is saved to shared preferences.
+     */
+    fun getAccessTokenFromCode(
+        context: Context,
+        authorizationCode: String,
+        onSuccess: (String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        thread {
             try {
-                val account: FullAccount = client.users().currentAccount
-                println("Account name: ${account.name.displayName}")
+                // Create the URL for the token exchange endpoint
+                val url = URL("https://api.dropbox.com/oauth2/token")
+
+                // Establish an HTTP connection
+                val connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+                }
+
+                // Prepare the POST data
+                val postData = "code=$authorizationCode" +
+                        "&grant_type=authorization_code" +
+                        "&client_id=${BuildConfig.DROPBOX_APP_KEY}" +
+                        "&client_secret=${BuildConfig.DROPBOX_APP_SECRET}"
+
+                // Send the POST request
+                connection.outputStream.use { output ->
+                    output.write(postData.toByteArray())
+                }
+
+                // Parse the response
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val jsonResponse = JSONObject(response)
+
+                // Extract the access token
+                val accessToken = jsonResponse.getString("access_token")
+
+                // Save the access token in shared preferences
+                saveAccessToken(context, accessToken)
+
+                // Notify the caller of success
+                onSuccess(accessToken)
             } catch (e: Exception) {
-                println("Error fetching account info: ${e.message}")
+                // Handle any errors
+                onError(e.localizedMessage ?: "An error occurred during token exchange")
             }
         }
+    }
+
+    /**
+     * Saves the access token securely in shared preferences.
+     */
+    fun saveAccessToken(context: Context, accessToken: String) {
+        val sharedPreferences = context.getSharedPreferences("NotiSaaverPrefs", Context.MODE_PRIVATE)
+        sharedPreferences.edit().putString(ACCESS_TOKEN_PREF_KEY, accessToken).apply()
+    }
+
+    /**
+     * Retrieves the saved access token from shared preferences.
+     */
+    fun getAccessToken(context: Context): String? {
+        val sharedPreferences = context.getSharedPreferences("NotiSaaverPrefs", Context.MODE_PRIVATE)
+        return sharedPreferences.getString(ACCESS_TOKEN_PREF_KEY, null)
     }
 }

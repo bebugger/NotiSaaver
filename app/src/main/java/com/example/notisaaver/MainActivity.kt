@@ -1,5 +1,6 @@
 package com.example.notisaaver
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -29,6 +30,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -36,34 +38,6 @@ class MainActivity : AppCompatActivity() {
             NotiSaaverTheme {
                 NotificationAccessScreen()
             }
-        }
-
-        if (intent != null) {
-            handleDropboxRedirectIntent(intent)
-        } else {
-            Log.w("MainActivity", "Intent is null in onCreate")
-        }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (intent != null) {
-            handleDropboxRedirectIntent(intent)
-        } else {
-            Log.w("MainActivity", "Intent is null in onResume")
-        }
-    }
-
-    private fun handleDropboxRedirectIntent(intent: Intent?) {
-        val uri: Uri? = intent?.data
-        if (uri != null && uri.scheme == "https" && uri.host == "sites.google.com" && uri.path == "/view/notisaaver") {
-            try {
-                DropboxHelper.handleOAuthRedirect(this, uri)
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Error handling Dropbox OAuth redirect", e)
-            }
-        } else {
-            Log.w("MainActivity", "No valid URI found in intent or URI does not match the required format")
         }
     }
 
@@ -154,7 +128,17 @@ class MainActivity : AppCompatActivity() {
             Spacer(modifier = Modifier.height(8.dp))
 
             Button(
-                onClick = { folderList = fetchDropboxFolders(context) },
+                onClick = {
+                    thread {
+                        val folders = fetchDropboxFolders(context)
+                        folderList = folders
+                        if (folders.isEmpty()) {
+                            runOnUiThread {
+                                Toast.makeText(context, "No folders found or an error occurred.", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                },
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("List Dropbox Folders")
@@ -171,25 +155,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveAccessTokenFromCode(context: Context, authorizationCode: String) {
-        thread {
-            try {
-                val accessToken = DropboxHelper.getAccessTokenFromCode(context, authorizationCode)
-                if (accessToken != null) {
-                    DropboxHelper.saveAccessToken(context, accessToken)
-                    runOnUiThread {
-                        Toast.makeText(context, "Access token saved successfully", Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    runOnUiThread {
-                        Toast.makeText(context, "Failed to retrieve access token", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            } catch (e: Exception) {
+        DropboxHelper.getAccessTokenFromCode(
+            context,
+            authorizationCode,
+            onSuccess = { accessToken ->
+                DropboxHelper.saveAccessToken(context, accessToken)
                 runOnUiThread {
-                    Toast.makeText(context, "Error: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Access token saved successfully", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onError = { errorMessage ->
+                runOnUiThread {
+                    Toast.makeText(context, "Error: $errorMessage", Toast.LENGTH_SHORT).show()
                 }
             }
-        }
+        )
     }
 
     private fun navigateToNotificationSettings() {
@@ -230,16 +210,53 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun fetchDropboxFolders(context: Context): List<String> {
-        val accessToken = DropboxHelper.getAccessToken(context) ?: return emptyList()
+        val accessToken = DropboxHelper.getAccessToken(context)
+        if (accessToken == null) {
+            runOnUiThread {
+                Toast.makeText(context, "Access token is missing. Please authenticate with Dropbox.", Toast.LENGTH_SHORT).show()
+            }
+            return emptyList()
+        }
+
         return try {
             val config = DbxRequestConfig.newBuilder("NotiSaaver/1.0").build()
             val client = DbxClientV2(config, accessToken)
-            val entries = client.files().listFolder("").entries
-            entries.map { it.name }
+
+            val folderNames = mutableListOf<String>()
+            var result = client.files().listFolder("")
+
+            while (true) {
+                for (metadata in result.entries) {
+                    Log.d("MainActivity", "Found entry: ${metadata.pathLower}")
+                    folderNames.add(metadata.name)
+                }
+
+                if (!result.hasMore) {
+                    break
+                }
+
+                result = client.files().listFolderContinue(result.cursor)
+            }
+
+            folderNames
         } catch (e: Exception) {
+            val errorMessage = "Error fetching folders: ${e.localizedMessage}"
+            Log.e("MainActivity", errorMessage, e)
+            runOnUiThread {
+                Toast.makeText(context, errorMessage, Toast.LENGTH_SHORT).show()
+            }
             emptyList()
         }
     }
+
+    private fun runOnUiThread(action: () -> Unit) {
+        if (Thread.currentThread() != mainLooper.thread) {
+            this.runOnUiThread { action() }
+        } else {
+            action()
+        }
+    }
+
 
     @Preview(showBackground = true)
     @Composable

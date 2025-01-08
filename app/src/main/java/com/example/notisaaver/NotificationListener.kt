@@ -1,30 +1,40 @@
 package com.example.notisaaver
 
 import android.app.Notification
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Environment
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import android.telephony.TelephonyManager
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.IntentFilter
-import android.telephony.TelephonyManager
-
 class NotificationListener : NotificationListenerService() {
+
+    private var callReceiver: CallReceiver? = null
 
     override fun onCreate() {
         super.onCreate()
 
         // Register for phone call state changes
-        val callReceiver = CallReceiver()
+        callReceiver = CallReceiver()
         val intentFilter = IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
         registerReceiver(callReceiver, intentFilter)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // Unregister the receiver to prevent leaks
+        callReceiver?.let {
+            unregisterReceiver(it)
+        }
+        callReceiver = null
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
