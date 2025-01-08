@@ -12,6 +12,8 @@ import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -49,6 +51,12 @@ class MainActivity : AppCompatActivity() {
         var accountInfo by remember { mutableStateOf<String?>(null) }
         var folderList by remember { mutableStateOf<List<String>>(emptyList()) }
 
+        // Check if access token is present
+        val accessToken = DropboxHelper.getAccessToken(context)
+
+        // Check if notification access is granted
+        val isNotificationAccessGranted = isNotificationAccessEnabled(context)
+
         Column(
             modifier = modifier
                 .fillMaxSize()
@@ -60,14 +68,17 @@ class MainActivity : AppCompatActivity() {
                 modifier = Modifier.padding(bottom = 16.dp)
             )
 
-            Button(
-                onClick = { navigateToNotificationSettings() },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Open Notification Access Settings")
-            }
+            // Show the button only if notification access is not granted
+            if (!isNotificationAccessGranted) {
+                Button(
+                    onClick = { navigateToNotificationSettings() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Open Notification Access Settings")
+                }
 
-            Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+            }
 
             Button(
                 onClick = { latestNotification = getLatestNotificationDetails(context) },
@@ -85,32 +96,37 @@ class MainActivity : AppCompatActivity() {
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            Button(
-                onClick = { DropboxHelper.startOAuthFlow(context) },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Start Dropbox OAuth Flow")
+
+
+            if (accessToken == null || accessToken.isEmpty()) {
+                // Only show if access token is not present
+                Button(
+                    onClick = { DropboxHelper.startOAuthFlow(context) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Start Dropbox OAuth Flow")
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                OutlinedTextField(
+                    value = authorizationCode,
+                    onValueChange = { authorizationCode = it },
+                    label = { Text("Authorization Code") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Button(
+                    onClick = { saveAccessTokenFromCode(context, authorizationCode) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Get Access Token")
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
             }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            OutlinedTextField(
-                value = authorizationCode,
-                onValueChange = { authorizationCode = it },
-                label = { Text("Authorization Code") },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Button(
-                onClick = { saveAccessTokenFromCode(context, authorizationCode) },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Get Access Token")
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
 
             Button(
                 onClick = { fetchDropboxAccountInfo { accountDetails -> accountInfo = accountDetails } },
@@ -153,6 +169,17 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+    /**
+     * Checks if the notification access permission is granted.
+     */
+    fun isNotificationAccessEnabled(context: Context): Boolean {
+        val enabledListeners = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
+        return enabledListeners?.contains(context.packageName) == true
+    }
+
+
+
 
     private fun saveAccessTokenFromCode(context: Context, authorizationCode: String) {
         DropboxHelper.getAccessTokenFromCode(
