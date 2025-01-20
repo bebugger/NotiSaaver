@@ -3,26 +3,17 @@ package com.example.notisaaver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.widget.Toast
-import com.dropbox.core.DbxAppInfo
-import com.dropbox.core.DbxRequestConfig
-import com.dropbox.core.DbxSessionStore
-import com.dropbox.core.DbxWebAuth
-import com.dropbox.core.v2.DbxClientV2
-import com.dropbox.core.v2.users.FullAccount
 import com.example.notisaaver.util.BuildConfig
-import com.example.notisaaver.util.SharedPreferencesSessionStore
+import com.example.notisaaver.util.Logger
 import okhttp3.*
 import org.json.JSONObject
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
-import kotlin.concurrent.thread
 
 object DropboxHelper {
 
     private const val ACCESS_TOKEN_PREF_KEY = "DROPBOX_ACCESS_TOKEN"
     private const val DROPBOX_OAUTH_URL = "https://www.dropbox.com/oauth2/authorize"
+    private val client = OkHttpClient()
 
     /**
      * Starts the Dropbox OAuth flow by opening the authorization URL in a browser.
@@ -34,6 +25,8 @@ object DropboxHelper {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
+
+        Logger.d("DropboxHelper", "Started OAuth flow, opening URL: $authUrl")
     }
 
     /**
@@ -46,46 +39,44 @@ object DropboxHelper {
         onSuccess: (String) -> Unit,
         onError: (String) -> Unit
     ) {
-        thread {
-            try {
-                // Create the URL for the token exchange endpoint
-                val url = URL("https://api.dropbox.com/oauth2/token")
+        Logger.d("DropboxHelper", "Exchanging authorization code for access token. Code: $authorizationCode")
 
-                // Establish an HTTP connection
-                val connection = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-                }
+        val url = "https://api.dropbox.com/oauth2/token"
+        val formBody = FormBody.Builder()
+            .add("code", authorizationCode)
+            .add("grant_type", "authorization_code")
+            .add("client_id", BuildConfig.DROPBOX_APP_KEY)
+            .add("client_secret", BuildConfig.DROPBOX_APP_SECRET)
+            .build()
 
-                // Prepare the POST data
-                val postData = "code=$authorizationCode" +
-                        "&grant_type=authorization_code" +
-                        "&client_id=${BuildConfig.DROPBOX_APP_KEY}" +
-                        "&client_secret=${BuildConfig.DROPBOX_APP_SECRET}"
+        val request = Request.Builder()
+            .url(url)
+            .post(formBody)
+            .build()
 
-                // Send the POST request
-                connection.outputStream.use { output ->
-                    output.write(postData.toByteArray())
-                }
-
-                // Parse the response
-                val response = connection.inputStream.bufferedReader().use { it.readText() }
-                val jsonResponse = JSONObject(response)
-
-                // Extract the access token
-                val accessToken = jsonResponse.getString("access_token")
-
-                // Save the access token in shared preferences
-                saveAccessToken(context, accessToken)
-
-                // Notify the caller of success
-                onSuccess(accessToken)
-            } catch (e: Exception) {
-                // Handle any errors
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Logger.e("DropboxHelper", "Token exchange failed", e)
                 onError(e.localizedMessage ?: "An error occurred during token exchange")
             }
-        }
+
+            override fun onResponse(call: Call, response: Response) {
+                if (response.isSuccessful) {
+                    val jsonResponse = JSONObject(response.body?.string() ?: "{}")
+                    val accessToken = jsonResponse.getString("access_token")
+
+                    // Save the access token in shared preferences
+                    saveAccessToken(context, accessToken)
+
+                    // Notify the caller of success
+                    Logger.d("DropboxHelper", "Access token retrieved successfully")
+                    onSuccess(accessToken)
+                } else {
+                    Logger.e("DropboxHelper", "Failed to get access token: ${response.message}")
+                    onError("Failed to get access token: ${response.message}")
+                }
+            }
+        })
     }
 
     /**
@@ -94,6 +85,8 @@ object DropboxHelper {
     fun saveAccessToken(context: Context, accessToken: String) {
         val sharedPreferences = context.getSharedPreferences("NotiSaaverPrefs", Context.MODE_PRIVATE)
         sharedPreferences.edit().putString(ACCESS_TOKEN_PREF_KEY, accessToken).apply()
+
+        Logger.d("DropboxHelper", "Access token saved successfully: $accessToken")
     }
 
     /**
@@ -101,6 +94,14 @@ object DropboxHelper {
      */
     fun getAccessToken(context: Context): String? {
         val sharedPreferences = context.getSharedPreferences("NotiSaaverPrefs", Context.MODE_PRIVATE)
-        return sharedPreferences.getString(ACCESS_TOKEN_PREF_KEY, null)
+        val accessToken = sharedPreferences.getString(ACCESS_TOKEN_PREF_KEY, null)
+
+        if (accessToken != null) {
+            Logger.d("DropboxHelper", "Access token retrieved from shared preferences")
+        } else {
+            Logger.d("DropboxHelper", "No access token found in shared preferences")
+        }
+
+        return accessToken
     }
 }
